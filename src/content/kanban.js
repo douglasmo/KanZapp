@@ -25,7 +25,7 @@ function createKanbanBoard(conversations) {
     <div id="kanban-container">
       <div class="kanban-header">
         <div style="display: flex; align-items: center; gap: 15px; flex: 1; flex-wrap: wrap;">
-          <h2 style="margin:0; white-space: nowrap;">WhatsApp Kanban</h2>
+          <h2 style="margin:0; white-space: nowrap;">📊 KanZapp</h2>
           <div class="search-container" style="flex: 1; min-width: 200px; max-width: 300px; position: relative;">
             <input type="text" id="kanban-search" placeholder="Pesquisar..." style="width: 100%; padding: 8px 12px; border-radius: 20px; border: none; outline: none; background: rgba(255,255,255,0.2); color: white; font-size: 14px;">
           </div>
@@ -149,13 +149,14 @@ function renderColumns(columns) {
 }
 
 async function updateBoard(newConversations = [], searchTerm = null) {
-  const storage = await chrome.storage.local.get(['kanbanData', 'allConversations', 'kanbanColumns', 'kanbanTags', 'contactTags', 'followups']);
+  const storage = await chrome.storage.local.get(['kanbanData', 'allConversations', 'kanbanColumns', 'kanbanTags', 'contactTags', 'followups', 'contactNotes']);
   let kanbanData = storage.kanbanData || {};
   let allConversations = storage.allConversations || {};
   let columns = storage.kanbanColumns || DEFAULT_COLUMNS;
   let allTags = storage.kanbanTags || [];
   let contactTags = storage.contactTags || {};
   let followups = storage.followups || {};
+  let contactNotes = storage.contactNotes || {};
 
   // Update tag filter dropdown
   const tagFilter = document.getElementById('kanban-tag-filter');
@@ -208,6 +209,7 @@ async function updateBoard(newConversations = [], searchTerm = null) {
 
     const chatTags = allTags.filter(t => currentContactTags.includes(t.id));
     const hasFollowup = !!followups[chat.id];
+    const hasNote = !!contactNotes[chat.id];
 
     let status = kanbanData[chat.id] || firstColId;
     if (!columns.find(c => c.id === status)) status = firstColId;
@@ -236,6 +238,9 @@ async function updateBoard(newConversations = [], searchTerm = null) {
           <button class="add-tag-to-card" title="Tags" style="background: none; border: none; cursor: pointer; padding: 2px; font-size: 12px; opacity: 0.5; align-self: flex-start;">🏷️</button>
           <button class="send-message-to-card" title="Mensagens" style="background: none; border: none; cursor: pointer; padding: 2px; font-size: 12px; opacity: 0.5; align-self: flex-start;">💬</button>
           <button class="schedule-followup" title="Agendar Lembrete" style="background: ${hasFollowup ? '#ff9800' : 'none'}; border: ${hasFollowup ? '2px solid white' : 'none'}; color: ${hasFollowup ? 'white' : 'inherit'}; box-shadow: ${hasFollowup ? '0 0 5px rgba(255,152,0,0.5)' : 'none'}; border-radius: 50%; width: 22px; height: 22px; cursor: pointer; padding: 0; font-size: 12px; opacity: ${hasFollowup ? '1' : '0.5'}; align-self: flex-start; display: flex; align-items: center; justify-content: center;">🔔</button>
+          <button class="add-note-to-card" title="Notas Internas" style="background: none; border: none; cursor: pointer; padding: 2px; font-size: 12px; opacity: ${hasNote ? '1' : '0.5'}; align-self: flex-start; position: relative;">
+            📝 ${hasNote ? '<span style="position: absolute; top: -2px; right: -2px; width: 6px; height: 6px; background: #00a884; border-radius: 50%;"></span>' : ''}
+          </button>
         </div>
       </div>
     `;
@@ -253,6 +258,11 @@ async function updateBoard(newConversations = [], searchTerm = null) {
     card.querySelector('.schedule-followup').onclick = (e) => {
       e.stopPropagation();
       showFollowupScheduler(chat.id, chat.name, card);
+    };
+
+    card.querySelector('.add-note-to-card').onclick = (e) => {
+      e.stopPropagation();
+      showNotesModal(chat.id, chat.name);
     };
 
     card.addEventListener('dragstart', (e) => {

@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "WhatsApp Web Kanban",
-  "version": "1.1",
-  "description": "Transforme suas conversas do WhatsApp Web em um quadro Kanban.",
+  "name": "KanZapp - CRM Kanban para WhatsApp",
+  "version": "1.2",
+  "description": "Transforme seu WhatsApp Web em um CRM de alta performance com funil de vendas Kanban, tags e mensagens rápidas.",
   "permissions": ["storage", "activeTab", "notifications", "alarms"],
   "background": {
     "service_worker": "src/background/index.js"
@@ -16,6 +16,7 @@
         "src/content/tags.js",
         "src/content/messages.js",
         "src/content/followup.js",
+        "src/content/notes.js",
         "src/content/kanban.js",
         "src/content/main.js"
       ],
