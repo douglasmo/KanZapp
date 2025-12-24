@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "WhatsApp Web Kanban",
+  "version": "1.1",
+  "description": "Transforme suas conversas do WhatsApp Web em um quadro Kanban.",
+  "permissions": ["storage", "activeTab", "notifications", "alarms"],
+  "background": {
+    "service_worker": "src/background/index.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://web.whatsapp.com/*"],
+      "js": [
+        "src/content/storage.js",
+        "src/content/scraper.js",
+        "src/content/tags.js",
+        "src/content/messages.js",
+        "src/content/followup.js",
+        "src/content/kanban.js",
+        "src/content/main.js"
+      ],
+      "css": ["src/content/styles.css"]
+    }
+  ],
+  "action": {
+    "default_title": "WhatsApp Kanban"
+  }
+}
