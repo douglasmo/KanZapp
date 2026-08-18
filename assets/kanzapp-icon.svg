@@ -1,0 +1,40 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="KanZapp icon">
+  <defs>
+    <linearGradient id="bg" x1="84" y1="64" x2="436" y2="448" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#10201D"/>
+      <stop offset="1" stop-color="#0F766E"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="140" y1="120" x2="372" y2="392" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#7CF0D3"/>
+      <stop offset="1" stop-color="#00A884"/>
+    </linearGradient>
+    <filter id="shadow" x="76" y="74" width="360" height="360" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feFlood flood-opacity="0" result="BackgroundImageFix"/>
+      <feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"/>
+      <feOffset dy="14"/>
+      <feGaussianBlur stdDeviation="16"/>
+      <feComposite in2="hardAlpha" operator="out"/>
+      <feColorMatrix type="matrix" values="0 0 0 0 0.0392157 0 0 0 0 0.0941176 0 0 0 0 0.0823529 0 0 0 0.32 0"/>
+      <feBlend mode="normal" in2="BackgroundImageFix" result="effect1_dropShadow_1_2"/>
+      <feBlend mode="normal" in="SourceGraphic" in2="effect1_dropShadow_1_2" result="shape"/>
+    </filter>
+  </defs>
+
+  <rect width="512" height="512" rx="112" fill="url(#bg)"/>
+  <rect x="54" y="54" width="404" height="404" rx="96" fill="#0B1513" fill-opacity="0.18"/>
+
+  <g filter="url(#shadow)">
+    <rect x="108" y="108" width="296" height="296" rx="80" fill="url(#accent)"/>
+    <rect x="122" y="122" width="268" height="268" rx="68" fill="#FFFFFF" fill-opacity="0.10"/>
+  </g>
+
+  <g>
+    <rect x="150" y="164" width="212" height="26" rx="13" fill="#FFFFFF" fill-opacity="0.92"/>
+    <rect x="150" y="210" width="160" height="26" rx="13" fill="#FFFFFF" fill-opacity="0.74"/>
+    <rect x="150" y="256" width="188" height="26" rx="13" fill="#FFFFFF" fill-opacity="0.64"/>
+    <rect x="150" y="302" width="136" height="26" rx="13" fill="#FFFFFF" fill-opacity="0.52"/>
+  </g>
+
+  <path d="M213 174L262 174L262 236L312 236L312 174L361 174L361 338L312 338L312 278L262 278L262 338L213 338V174Z" fill="#10201D"/>
+  <path d="M216 172L258 172L258 239L309 239L309 172L358 172L358 341L309 341L309 280L258 280L258 341L216 341V172Z" stroke="#F8FCFB" stroke-width="12" stroke-linejoin="round"/>
+</svg>

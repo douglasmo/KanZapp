@@ -1,0 +1,1568 @@
+<!doctype html>
+<!--
+  KanZapp — bancada visual da camada de interface.
+
+  Como servir (precisa de HTTP: a página usa módulos ESM e fetch do CSS):
+
+      npx --yes serve .            # a partir da raiz do projeto
+      # ou
+      python -m http.server 8000
+
+  Depois abra:  http://localhost:3000/tests/ui-harness.html
+                http://localhost:8000/tests/ui-harness.html
+
+  A bancada NÃO importa o motor (`src/core`, `src/wa`): ela cria um store falso
+  em memória com a MESMA API do contrato (seção 3.5) e um adapter falso
+  (seção 4.2). Serve para validar a UI isoladamente enquanto o motor é escrito.
+
+  Tudo fica exposto em `window.__uiHarness`.
+-->
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KanZapp — bancada da interface</title>
+<style>
+  body {
+    margin: 0;
+    font: 14px/1.5 "Segoe UI", system-ui, sans-serif;
+    background: #f6f7f9;
+    color: #111b21;
+  }
+  body.is-dark { background: #0b141a; color: #e9edef; }
+  .wrap { max-width: 900px; margin: 0 auto; padding: 24px 20px 120px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  p.sub { margin: 0 0 20px; color: #667781; }
+  fieldset { border: 1px solid #d8dee1; border-radius: 10px; margin: 0 0 16px; padding: 12px 14px; }
+  body.is-dark fieldset { border-color: #2a3942; }
+  legend { font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; }
+  button { font: inherit; padding: 6px 12px; border-radius: 8px; border: 1px solid #ccd3d7;
+           background: #fff; cursor: pointer; margin: 0 6px 6px 0; }
+  body.is-dark button { background: #202c33; border-color: #3b4a54; color: #e9edef; }
+  button:hover { border-color: #00a884; }
+  code { background: rgba(127,127,127,.16); padding: 1px 5px; border-radius: 4px; }
+  #log { font-family: ui-monospace, Consolas, monospace; font-size: 12px; white-space: pre-wrap;
+         background: rgba(127,127,127,.1); border-radius: 8px; padding: 10px; min-height: 60px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Bancada visual — camada de interface do KanZapp v2</h1>
+  <p class="sub">Store e adapter falsos, 120 contatos sintéticos, 4 colunas. O quadro real está montado
+  em um shadow root por cima desta página. Use <code>window.__uiHarness</code> no console.</p>
+
+  <fieldset>
+    <legend>Quadro</legend>
+    <button id="btn-open">Abrir quadro</button>
+    <button id="btn-close">Fechar quadro</button>
+    <button id="btn-toggle">Alternar (Ctrl+Shift+K)</button>
+  </fieldset>
+
+  <fieldset>
+    <legend>Tema e densidade</legend>
+    <button data-theme="auto">Tema: auto (segue o "WhatsApp")</button>
+    <button data-theme="light">Tema: claro</button>
+    <button data-theme="dark">Tema: escuro</button>
+    <button id="btn-wa-theme">Alternar o tema do "WhatsApp" (afeta o modo auto)</button>
+    <br>
+    <button data-density="comfortable">Densidade: confortável</button>
+    <button data-density="compact">Densidade: compacta</button>
+  </fieldset>
+
+  <fieldset>
+    <legend>Atualização incremental</legend>
+    <button id="btn-update">Disparar update (__uiHarness.update)</button>
+    <button id="btn-diff">Medir reaproveitamento de nós (checkDiff)</button>
+    <button id="btn-storm">10 updates seguidos</button>
+  </fieldset>
+
+  <fieldset>
+    <legend>Diálogos</legend>
+    <button data-dialog="tags">Tags</button>
+    <button data-dialog="tagPicker">Tags do card</button>
+    <button data-dialog="templates">Modelos</button>
+    <button data-dialog="templatePicker">Enviar modelo</button>
+    <button data-dialog="followups">Follow-ups</button>
+    <button data-dialog="scheduler">Agendar follow-up</button>
+    <button data-dialog="notes">Nota interna</button>
+    <button data-dialog="settings">Configurações</button>
+    <button data-dialog="confirm">confirmDialog</button>
+    <button data-dialog="prompt">promptDialog</button>
+  </fieldset>
+
+  <fieldset>
+    <legend>Saúde do adapter</legend>
+    <button data-health="ok">Saudável</button>
+    <button data-health="degraded">Degradado</button>
+    <button data-health="down">Não detectado</button>
+  </fieldset>
+
+  <fieldset>
+    <legend>Regressões automatizadas</legend>
+    <button id="btn-checkall">Rodar todas (checkAll)</button>
+    <span class="muted">drag · esc · estado vazio · arraste órfão · transbordo de texto</span>
+  </fieldset>
+
+  <fieldset>
+    <legend>Saída</legend>
+    <div id="log">pronto.</div>
+  </fieldset>
+  <!-- preenchido só com ?auto=1, para leitura por navegador headless -->
+  <pre id="auto-results" hidden></pre>
+</div>
+
+<script type="module">
+/* ------------------------------------------------------------------ *
+ * 1. Stub do `chrome` (a UI só usa runtime.getURL e runtime.sendMessage)
+ * ------------------------------------------------------------------ */
+const log = (...args) => {
+  const el = document.getElementById('log');
+  el.textContent = `${args.map((a) => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ')}\n${el.textContent}`.slice(0, 4000);
+  console.log('[harness]', ...args);
+};
+
+window.chrome = {
+  runtime: {
+    id: 'harness',
+    lastError: null,
+    getURL: (path) => new URL(`../${path}`, location.href).href,
+    sendMessage: (message, callback) => {
+      log('sendMessage →', message.type);
+      if (typeof callback === 'function') callback({ ok: true });
+    },
+    onMessage: { addListener() {}, removeListener() {} }
+  }
+};
+
+/* ------------------------------------------------------------------ *
+ * 2. Dados sintéticos
+ * ------------------------------------------------------------------ */
+const FIRST = ['Ana', 'Bruno', 'Carla', 'Diego', 'Elisa', 'Fábio', 'Gabriela', 'Henrique', 'Íris', 'João',
+  'Karina', 'Lucas', 'Mariana', 'Nuno', 'Otávio', 'Priscila', 'Quésia', 'Rafael', 'Sofia', 'Thiago'];
+const LAST = ['Almeida', 'Barros', 'Cardoso', 'Duarte', 'Esteves', 'Ferraz', 'Gonçalves', 'Horta',
+  'Iglesias', 'Jardim', 'Klein', 'Lopes'];
+const PREVIEWS = [
+  'Bom dia! Consegue me mandar a proposta hoje?',
+  'Fechado, pode emitir a nota 👍',
+  'Vou conversar com meu sócio e retorno',
+  'Ainda está de pé aquele desconto?',
+  'Recebi, obrigado!',
+  'Prefiro parcelar em 3x, dá?',
+  'Mensagem bem comprida para testar a truncagem por CSS em vez de substring, com bastante texto mesmo',
+  'Ok'
+];
+
+function makeContacts(n) {
+  const contacts = {};
+  const cards = {};
+  const now = Date.now();
+  for (let i = 0; i < n; i += 1) {
+    const name = `${FIRST[i % FIRST.length]} ${LAST[(i * 7) % LAST.length]}`;
+    const id = `c${i}@c.us`;
+    contacts[id] = {
+      id,
+      idKind: 'jid',
+      name,
+      avatarUrl: i % 5 === 0 ? `https://exemplo.invalido/avatar-${i}.jpg` : '',
+      preview: PREVIEWS[i % PREVIEWS.length],
+      unread: i % 7 === 0 ? (i % 13) + 1 : 0,
+      isGroup: i % 11 === 0,
+      inboxOrder: i,
+      lastSeenAt: now - i * 137000,
+      firstSeenAt: now - i * 900000
+    };
+    cards[id] = {
+      columnId: ['todo', 'doing', 'nego', 'done'][i % 4],
+      order: Math.floor(i / 4),
+      tagIds: i % 3 === 0 ? ['tag_vip'] : i % 5 === 0 ? ['tag_frio', 'tag_vip'] : [],
+      note: i % 9 === 0 ? 'Cliente pediu retorno depois do dia 20.' : '',
+      createdAt: now - i * 900000,
+      updatedAt: now - i * 100000
+    };
+  }
+
+  // Casos de canto propositais: XSS, nome enorme, emoji, nome vazio.
+  const hostile = [
+    ['xss1@c.us', '<img src=x onerror="window.__pwned=1">', '<script>window.__pwned2=1<\/script> olá'],
+    ['xss2@c.us', '"><svg onload=alert(1)>', 'aspas " e < > & na prévia'],
+    ['long@c.us', 'Maria Fernanda de Albuquerque Cavalcanti dos Santos Nogueira Filha', 'nome muito longo'],
+    ['emoji@c.us', '🚀 Equipe Vendas 🇧🇷 (grupo)', 'Reunião às 15h ✅'],
+    ['empty@c.us', '', '']
+  ];
+  hostile.forEach(([id, name, preview], k) => {
+    contacts[id] = {
+      id,
+      idKind: 'jid',
+      name,
+      avatarUrl: '',
+      preview,
+      unread: k === 0 ? 3 : 0,
+      isGroup: false,
+      inboxOrder: 1000 + k,
+      lastSeenAt: now - k * 60000,
+      firstSeenAt: now
+    };
+    cards[id] = {
+      columnId: ['todo', 'doing', 'nego', 'done'][k % 4],
+      order: 900 + k,
+      tagIds: [],
+      note: '',
+      createdAt: now,
+      updatedAt: now
+    };
+  });
+
+  return { contacts, cards };
+}
+
+const seed = makeContacts(120);
+
+const initialState = {
+  version: 2,
+  columns: [
+    { id: 'todo', title: 'Entrada', color: '#0b6bcb', wipLimit: null, collapsed: false },
+    { id: 'doing', title: 'Em atendimento', color: '#00a884', wipLimit: 25, collapsed: false },
+    { id: 'nego', title: 'Negociação', color: '#c2410c', wipLimit: 10, collapsed: false },
+    { id: 'done', title: 'Concluído', color: '#6b7280', wipLimit: null, collapsed: false }
+  ],
+  tags: [
+    { id: 'tag_vip', name: 'VIP', color: '#7c5cd6', description: 'Cliente prioritário' },
+    { id: 'tag_frio', name: 'Lead frio', color: '#0b6bcb', description: 'Sem resposta há mais de 7 dias' },
+    { id: 'tag_xss', name: '<b>tag</b> "perigosa"', color: '#b3261e', description: '<img src=x onerror=1>' }
+  ],
+  templates: [
+    { id: 'tpl_1', title: 'Saudação', text: 'Olá! Tudo bem? Sou da equipe comercial.', shortcut: '/oi' },
+    { id: 'tpl_2', title: 'Cobrança gentil', text: 'Passando para lembrar do combinado. Consegue confirmar?', shortcut: '/cob' }
+  ],
+  contacts: seed.contacts,
+  cards: seed.cards,
+  followups: {
+    'c3@c.us': { contactId: 'c3@c.us', contactName: 'Diego Duarte', title: 'Ligar sobre o orçamento', timestamp: Date.now() - 3600000, done: false },
+    'c8@c.us': { contactId: 'c8@c.us', contactName: 'Íris Iglesias', title: 'Enviar contrato', timestamp: Date.now() + 7200000, done: false }
+  },
+  settings: {
+    theme: 'auto',
+    density: 'comfortable',
+    autoRefresh: false,
+    refreshMs: 4000,
+    onlyUnread: false,
+    sort: 'manual'
+  }
+};
+
+/* ------------------------------------------------------------------ *
+ * 3. Store falso com a API do contrato (seção 3.5)
+ *
+ * `core/search.js` é a única coisa do motor importada aqui: é um parser puro
+ * (sem DOM, sem chrome, sem estado) e o dublê precisa filtrar EXATAMENTE como
+ * o store de verdade — dublê que não filtra é dublê mentiroso, e o board
+ * confia no select (AUDIT-01 #11).
+ * ------------------------------------------------------------------ */
+const { parseSearchQuery, matchesSearchQuery } = await import('../src/core/search.js');
+
+function deepFreeze(object) {
+  Object.freeze(object);
+  for (const key of Object.keys(object)) {
+    const value = object[key];
+    if (value && typeof value === 'object' && !Object.isFrozen(value)) deepFreeze(value);
+  }
+  return object;
+}
+
+function createFakeStore(seedState) {
+  let state = JSON.parse(JSON.stringify(seedState));
+  let frozen = deepFreeze(JSON.parse(JSON.stringify(state)));
+  const subscribers = new Set();
+
+  function commit(mutator) {
+    mutator(state);
+    frozen = deepFreeze(JSON.parse(JSON.stringify(state)));
+    for (const fn of subscribers) {
+      try {
+        fn(frozen);
+      } catch (error) {
+        console.error('[harness] subscriber falhou', error);
+      }
+    }
+    return frozen;
+  }
+
+  function densify(columnId) {
+    Object.keys(state.cards)
+      .filter((id) => state.cards[id].columnId === columnId)
+      .sort((a, b) => state.cards[a].order - state.cards[b].order)
+      .forEach((id, index) => {
+        state.cards[id].order = index;
+      });
+  }
+
+  const actions = {
+    syncContacts(list) {
+      return commit((draft) => {
+        (list || []).forEach((chat, index) => {
+          if (!chat || !chat.id) return;
+          const previous = draft.contacts[chat.id] || {};
+          draft.contacts[chat.id] = Object.assign({}, previous, chat, {
+            inboxOrder: index,
+            lastSeenAt: Date.now(),
+            firstSeenAt: previous.firstSeenAt || Date.now()
+          });
+          if (!draft.cards[chat.id]) {
+            draft.cards[chat.id] = {
+              columnId: draft.columns[0].id,
+              order: Object.keys(draft.cards).length,
+              tagIds: [],
+              note: '',
+              createdAt: Date.now(),
+              updatedAt: Date.now()
+            };
+          }
+        });
+      });
+    },
+    moveCard(contactId, columnId, index) {
+      return commit((draft) => {
+        const card = draft.cards[contactId];
+        if (!card) return;
+        const from = card.columnId;
+        card.columnId = columnId;
+        card.updatedAt = Date.now();
+        const siblings = Object.keys(draft.cards)
+          .filter((id) => id !== contactId && draft.cards[id].columnId === columnId)
+          .sort((a, b) => draft.cards[a].order - draft.cards[b].order);
+        siblings.splice(Math.max(0, Math.min(index, siblings.length)), 0, contactId);
+        siblings.forEach((id, position) => {
+          draft.cards[id].order = position;
+        });
+        if (from !== columnId) densify(from);
+      });
+    },
+    reorderCard(contactId, index) {
+      return actions.moveCard(contactId, state.cards[contactId].columnId, index);
+    },
+    setCardTags(contactId, tagIds) {
+      return commit((draft) => {
+        if (draft.cards[contactId]) draft.cards[contactId].tagIds = tagIds.slice();
+      });
+    },
+    setNote(contactId, text) {
+      return commit((draft) => {
+        if (draft.cards[contactId]) draft.cards[contactId].note = text;
+      });
+    },
+    // ROADMAP §7: arquivamento do KanZapp (um id ou uma lista, uma escrita só)
+    setArchived(idOrIds, archived) {
+      const ids = Array.isArray(idOrIds) ? idOrIds : [idOrIds];
+      return commit((draft) => {
+        for (const id of new Set(ids)) {
+          const card = draft.cards[id];
+          if (!card) continue;
+          card.archived = archived !== false;
+          card.archivedAt = card.archived ? Date.now() : 0;
+          card.updatedAt = Date.now();
+        }
+      });
+    },
+    // ROADMAP §4: lote é UMA mutação
+    moveCards(ids, columnId) {
+      return commit((draft) => {
+        const set = new Set(ids);
+        const alvo = Object.keys(draft.cards)
+          .filter((id) => !set.has(id) && draft.cards[id].columnId === columnId)
+          .sort((a, b) => draft.cards[a].order - draft.cards[b].order);
+        const origens = new Set();
+        for (const id of set) {
+          if (!draft.cards[id]) continue;
+          origens.add(draft.cards[id].columnId);
+          draft.cards[id].columnId = columnId;
+          draft.cards[id].updatedAt = Date.now();
+          alvo.push(id);
+        }
+        alvo.forEach((id, index) => {
+          draft.cards[id].order = index;
+        });
+        for (const origem of origens) if (origem !== columnId) densify(origem);
+      });
+    },
+    addTagToCards(ids, tagId) {
+      return commit((draft) => {
+        for (const id of new Set(ids)) {
+          const card = draft.cards[id];
+          if (!card || (card.tagIds || []).includes(tagId)) continue;
+          card.tagIds = [...(card.tagIds || []), tagId];
+        }
+      });
+    },
+    removeTagFromCards(ids, tagId) {
+      return commit((draft) => {
+        for (const id of new Set(ids)) {
+          const card = draft.cards[id];
+          if (!card) continue;
+          card.tagIds = (card.tagIds || []).filter((t) => t !== tagId);
+        }
+      });
+    },
+    addColumn(title) {
+      return commit((draft) => {
+        draft.columns.push({ id: `col_${Date.now()}`, title, color: '#6b7280', wipLimit: null, collapsed: false });
+      });
+    },
+    renameColumn(id, title) {
+      return commit((draft) => {
+        const column = draft.columns.find((c) => c.id === id);
+        if (column) column.title = title;
+      });
+    },
+    setColumnColor(id, color) {
+      return commit((draft) => {
+        const column = draft.columns.find((c) => c.id === id);
+        if (column) column.color = color;
+      });
+    },
+    setColumnWipLimit(id, limit) {
+      return commit((draft) => {
+        const column = draft.columns.find((c) => c.id === id);
+        if (!column) return;
+        const value = Number(limit);
+        column.wipLimit = Number.isFinite(value) && value > 0 ? Math.floor(value) : null;
+      });
+    },
+    setColumnCollapsed(id, collapsed) {
+      return commit((draft) => {
+        const column = draft.columns.find((c) => c.id === id);
+        if (column) column.collapsed = collapsed === true;
+      });
+    },
+    removeColumn(id) {
+      return commit((draft) => {
+        if (draft.columns.length <= 1) return;
+        draft.columns = draft.columns.filter((c) => c.id !== id);
+        const first = draft.columns[0].id;
+        Object.values(draft.cards).forEach((card) => {
+          if (card.columnId === id) card.columnId = first;
+        });
+      });
+    },
+    reorderColumns(ids) {
+      return commit((draft) => {
+        draft.columns.sort((a, b) => ids.indexOf(a.id) - ids.indexOf(b.id));
+      });
+    },
+    addTag(tag) {
+      return commit((draft) => {
+        draft.tags.push(Object.assign({ id: `tag_${Date.now()}` }, tag));
+      });
+    },
+    updateTag(id, patch) {
+      return commit((draft) => {
+        const tag = draft.tags.find((t) => t.id === id);
+        if (tag) Object.assign(tag, patch);
+      });
+    },
+    removeTag(id) {
+      return commit((draft) => {
+        draft.tags = draft.tags.filter((t) => t.id !== id);
+        Object.values(draft.cards).forEach((card) => {
+          card.tagIds = (card.tagIds || []).filter((tagId) => tagId !== id);
+        });
+      });
+    },
+    addTemplate(template) {
+      return commit((draft) => {
+        draft.templates.push(Object.assign({ id: `tpl_${Date.now()}` }, template));
+      });
+    },
+    updateTemplate(id, patch) {
+      return commit((draft) => {
+        const template = draft.templates.find((t) => t.id === id);
+        if (template) Object.assign(template, patch);
+      });
+    },
+    removeTemplate(id) {
+      return commit((draft) => {
+        draft.templates = draft.templates.filter((t) => t.id !== id);
+      });
+    },
+    setFollowup(contactId, data) {
+      return commit((draft) => {
+        draft.followups[contactId] = Object.assign({ contactId }, data);
+      });
+    },
+    clearFollowup(contactId) {
+      return commit((draft) => {
+        delete draft.followups[contactId];
+      });
+    },
+    updateSettings(patch) {
+      return commit((draft) => {
+        Object.assign(draft.settings, patch);
+      });
+    },
+    exportJSON() {
+      return JSON.stringify(state, null, 2);
+    },
+    importJSON(json, options = {}) {
+      const incoming = typeof json === 'string' ? JSON.parse(json) : json;
+      if (!incoming || typeof incoming !== 'object' || !incoming.columns) {
+        throw new Error('schema inválido');
+      }
+      return commit((draft) => {
+        if (options.merge) {
+          Object.assign(draft.contacts, incoming.contacts || {});
+          Object.assign(draft.cards, incoming.cards || {});
+        } else {
+          Object.keys(draft).forEach((key) => delete draft[key]);
+          Object.assign(draft, incoming);
+        }
+      });
+    },
+    clearLegacy() {
+      log('clearLegacy() chamado (stub)');
+      return Promise.resolve(true);
+    }
+  };
+
+  return {
+    ready: () => Promise.resolve(),
+    getState: () => frozen,
+    subscribe(fn) {
+      subscribers.add(fn);
+      return () => subscribers.delete(fn);
+    },
+    actions,
+    select: {
+      /**
+       * Dublê do contrato §3.5: aplica busca, filtro de tag, só-não-lidas e
+       * ordenação de verdade. O board CONFIA neste select (AUDIT-01 #11), então
+       * um dublê que não filtra seria um dublê mentiroso.
+       */
+      cardsByColumn(currentState, filters = {}) {
+        const query = parseSearchQuery(filters.search || '');
+        const tagIds = Array.isArray(filters.tagIds) ? filters.tagIds.filter(Boolean) : [];
+        const onlyUnread = filters.onlyUnread ?? currentState.settings.onlyUnread === true;
+        const hideGroups = filters.hideGroups ?? currentState.settings.hideGroups === true;
+        const showArchived = filters.showArchived ?? currentState.settings.showArchived === true;
+        const sort = filters.sort || currentState.settings.sort || 'manual';
+        const out = {};
+        const titleById = {};
+        for (const column of currentState.columns) {
+          out[column.id] = [];
+          titleById[column.id] = column.title;
+        }
+        const fallback = currentState.columns[0] && currentState.columns[0].id;
+        for (const [id, card] of Object.entries(currentState.cards)) {
+          const contact = currentState.contacts[id];
+          if (!contact) continue;
+          if (card.archived === true && !showArchived) continue;
+          if (hideGroups && contact.isGroup === true) continue;
+          if (onlyUnread && !(contact.unread > 0)) continue;
+          if (tagIds.length && !tagIds.every((t) => (card.tagIds || []).includes(t))) continue;
+          const bucket = out[card.columnId] ? card.columnId : fallback;
+          if (!bucket) continue;
+          const tags = currentState.tags.filter((t) => (card.tagIds || []).includes(t.id));
+          if (!matchesSearchQuery(query, {
+            name: contact.name,
+            preview: contact.preview,
+            note: card.note,
+            tags,
+            column: titleById[bucket]
+          })) continue;
+          out[bucket].push({
+            id,
+            contact,
+            card,
+            tags,
+            followup: currentState.followups[id] || null
+          });
+        }
+        const cmp = {
+          manual: (a, b) => (a.card.order || 0) - (b.card.order || 0),
+          name: (a, b) => String(a.contact.name).localeCompare(String(b.contact.name), 'pt-BR'),
+          recent: (a, b) => (b.contact.lastSeenAt || 0) - (a.contact.lastSeenAt || 0),
+          inbox: (a, b) => {
+            const ai = Number.isFinite(a.contact.inboxOrder) ? a.contact.inboxOrder : Infinity;
+            const bi = Number.isFinite(b.contact.inboxOrder) ? b.contact.inboxOrder : Infinity;
+            return ai !== bi ? ai - bi : (a.card.order || 0) - (b.card.order || 0);
+          }
+        }[sort] || ((a, b) => (a.card.order || 0) - (b.card.order || 0));
+        for (const key of Object.keys(out)) out[key].sort(cmp);
+        return out;
+      },
+      contactsMissingFromInbox(currentState) {
+        return Object.keys(currentState.contacts).filter((id) => !Number.isInteger(currentState.contacts[id].inboxOrder));
+      },
+      /** ROADMAP §7: insumo do utilitário manual de arquivamento. */
+      inactiveCards(currentState, days = 90, options = {}) {
+        const limite = Date.now() - Math.max(1, days) * 86400000;
+        return Object.keys(currentState.cards).filter((id) => {
+          const card = currentState.cards[id];
+          const contact = currentState.contacts[id];
+          if (!card || !contact) return false;
+          if (!options.includeArchived && card.archived === true) return false;
+          const ultimo = Math.max(contact.lastSeenAt || 0, card.updatedAt || 0);
+          return ultimo > 0 && ultimo < limite;
+        });
+      },
+      stats(currentState) {
+        const arquivados = Object.values(currentState.cards).filter((c) => c.archived === true).length;
+        return {
+          contatos: Object.keys(currentState.contacts).length,
+          cards: Object.keys(currentState.cards).length,
+          arquivados,
+          tags: currentState.tags.length
+        };
+      }
+    },
+    /** Só da bancada: aplica uma mutação arbitrária e notifica. */
+    __commit: commit,
+    __raw: () => state
+  };
+}
+
+/* ------------------------------------------------------------------ *
+ * 4. Adapter e composer falsos
+ * ------------------------------------------------------------------ */
+let waTheme = 'light';
+const health = { ok: true, strategy: 'pane-side', confidence: 96, rowsFound: 125, lastProbeAt: Date.now(), lastError: null, degraded: false };
+
+const adapter = {
+  probe: () => {
+    health.lastProbeAt = Date.now();
+    log('adapter.probe(true)');
+    return { ok: health.ok, pane: null, strategy: health.strategy, confidence: health.confidence, rowsFound: health.rowsFound, at: health.lastProbeAt };
+  },
+  listChats: () => Object.values(store.getState().contacts).slice(0, 40).map((c, i) => Object.assign({}, c, { inboxOrder: i })),
+  observe: (cb) => {
+    log('adapter.observe() ligado');
+    const id = window.setInterval(() => cb(), 60000);
+    return () => {
+      window.clearInterval(id);
+      log('adapter.observe() desligado');
+    };
+  },
+  getTheme: () => waTheme,
+  health,
+  diagnostics: () => ({
+    versaoAdapter: 'harness-1',
+    paneStrategy: health.strategy,
+    rowStrategy: 'role-row',
+    confianca: health.confidence,
+    linhas: health.rowsFound,
+    ultimoErro: health.lastError,
+    degradado: health.degraded,
+    tentativasVazias: 0,
+    href: location.href
+  })
+};
+
+/**
+ * Sweeper falso com o contrato do `src/wa/sweeper.js`: emite progresso em
+ * lotes, respeita `signal.aborted` e termina com um resumo. O `?auto=1` usa
+ * passos curtos para não segurar a bancada.
+ */
+const sweeper = {
+  run: async ({ onProgress, signal } = {}) => {
+    let found = 0;
+    for (let step = 1; step <= 6; step += 1) {
+      if (signal && signal.aborted) {
+        if (onProgress) onProgress({ found, step, done: true });
+        return { ok: true, found, batches: step, stopped: true, reason: 'cancelado' };
+      }
+      found += 20;
+      if (onProgress) onProgress({ found, step, done: false });
+      await new Promise((r) => window.setTimeout(r, 30));
+    }
+    if (onProgress) onProgress({ found, step: 6, done: true });
+    log('sweeper.run →', found);
+    return { ok: true, found, batches: 6, stopped: false, reason: 'fim-da-lista' };
+  },
+  isRunning: () => false
+};
+
+const composer = {
+  openChat: async (chat) => {
+    log('composer.openChat →', chat && chat.name);
+    return { ok: true, via: 'row' };
+  },
+  insertDraft: async (text) => {
+    log('composer.insertDraft →', text.slice(0, 40));
+    return true;
+  },
+  sendMessage: async (chat, text) => {
+    log('composer.sendMessage →', `${chat && chat.name}: ${text.slice(0, 30)}`);
+    return true;
+  }
+};
+
+/* ------------------------------------------------------------------ *
+ * 5. Monta a UI real
+ * ------------------------------------------------------------------ */
+const { createAppRoot } = await import('../src/ui/app-root.js');
+const views = {
+  tags: await import('../src/ui/views/tags.js'),
+  templates: await import('../src/ui/views/templates.js'),
+  followups: await import('../src/ui/views/followups.js'),
+  notes: await import('../src/ui/views/notes.js'),
+  settings: await import('../src/ui/views/settings.js')
+};
+
+const store = createFakeStore(initialState);
+const messenger = {
+  scheduleFollowup: async (data) => {
+    log('messenger.scheduleFollowup', data.title);
+    return { ok: true };
+  },
+  cancelFollowup: async (id) => {
+    log('messenger.cancelFollowup', id);
+    return { ok: true };
+  },
+  syncFollowups: async () => {
+    log('messenger.syncFollowups');
+    return { ok: true };
+  }
+};
+
+const appRoot = createAppRoot({
+  store,
+  adapter,
+  composer,
+  sweeper,
+  messenger,
+  logger: console,
+  onRefresh: () => log('onRefresh() pedido pelo board'),
+  onOpenChange: (isOpen) => log(`board ${isOpen ? 'aberto' : 'fechado'}`)
+});
+
+await appRoot.mount();
+appRoot.open();
+
+const viewCtx = {
+  store,
+  adapter,
+  composer,
+  messenger,
+  logger: console,
+  dialogs: appRoot.dialogs,
+  toast: (message, options) => appRoot.toast(message, options)
+};
+
+/* ------------------------------------------------------------------ *
+ * 6. Controles
+ * ------------------------------------------------------------------ */
+/**
+ * Os controles desta página são procurados SÓ dentro de `.wrap`. O host do
+ * shadow root (`#kanzapp-root`) recebe `data-theme`/`data-density` do
+ * `ui/theme.js`, então um `document.querySelectorAll('[data-density]')` também
+ * o pegava e pendurava nele um onclick da bancada — qualquer clique dentro do
+ * quadro disparava um `updateSettings({density})` fantasma, que repintava o
+ * quadro no meio do clique e desfazia o filtro que o usuário acabara de ligar.
+ */
+const painel = document.querySelector('.wrap');
+
+let tick = 0;
+
+function incrementalUpdate() {
+  tick += 1;
+  store.__commit((draft) => {
+    const ids = Object.keys(draft.contacts).slice(0, 12);
+    ids.forEach((id, i) => {
+      draft.contacts[id].preview = `Atualização #${tick} · ${PREVIEWS[(i + tick) % PREVIEWS.length]}`;
+      draft.contacts[id].unread = (i + tick) % 4 === 0 ? ((i + tick) % 9) + 1 : 0;
+      draft.contacts[id].lastSeenAt = Date.now();
+    });
+    const novo = `novo${tick}@c.us`;
+    draft.contacts[novo] = {
+      id: novo,
+      idKind: 'jid',
+      name: `Contato novo ${tick}`,
+      avatarUrl: '',
+      preview: 'Acabou de chegar na caixa',
+      unread: 2,
+      isGroup: false,
+      inboxOrder: 0,
+      lastSeenAt: Date.now(),
+      firstSeenAt: Date.now()
+    };
+    draft.cards[novo] = {
+      columnId: 'todo', order: -1, tagIds: [], note: '', createdAt: Date.now(), updatedAt: Date.now()
+    };
+  });
+  log(`update #${tick} aplicado`);
+}
+
+function snapshotNodes() {
+  const shadow = appRoot.shadow;
+  const map = new Map();
+  shadow.querySelectorAll('[data-card-id]').forEach((node) => map.set(node.dataset.cardId, node));
+  return map;
+}
+
+function checkDiff() {
+  const before = snapshotNodes();
+  incrementalUpdate();
+  const after = snapshotNodes();
+  let same = 0;
+  let replaced = 0;
+  for (const [id, node] of before) {
+    if (!after.has(id)) continue;
+    if (after.get(id) === node) same += 1;
+    else replaced += 1;
+  }
+  const result = { antes: before.size, depois: after.size, reaproveitados: same, recriados: replaced };
+  log('checkDiff →', result);
+  return result;
+}
+
+document.getElementById('btn-open').onclick = () => appRoot.open();
+document.getElementById('btn-close').onclick = () => appRoot.close();
+document.getElementById('btn-toggle').onclick = () => appRoot.toggle();
+document.getElementById('btn-update').onclick = incrementalUpdate;
+document.getElementById('btn-diff').onclick = checkDiff;
+document.getElementById('btn-storm').onclick = () => {
+  for (let i = 0; i < 10; i += 1) window.setTimeout(incrementalUpdate, i * 120);
+};
+document.getElementById('btn-wa-theme').onclick = () => {
+  waTheme = waTheme === 'dark' ? 'light' : 'dark';
+  document.body.classList.toggle('is-dark', waTheme === 'dark');
+  store.actions.updateSettings({});
+  log(`tema do "WhatsApp" agora é ${waTheme}`);
+};
+
+painel.querySelectorAll('[data-theme]').forEach((button) => {
+  button.onclick = () => {
+    store.actions.updateSettings({ theme: button.dataset.theme });
+    document.body.classList.toggle('is-dark',
+      button.dataset.theme === 'dark' || (button.dataset.theme === 'auto' && waTheme === 'dark'));
+    log(`tema: ${button.dataset.theme}`);
+  };
+});
+
+painel.querySelectorAll('[data-density]').forEach((button) => {
+  button.onclick = () => {
+    store.actions.updateSettings({ density: button.dataset.density });
+    log(`densidade: ${button.dataset.density}`);
+  };
+});
+
+painel.querySelectorAll('[data-health]').forEach((button) => {
+  button.onclick = () => {
+    const mode = button.dataset.health;
+    health.ok = mode !== 'down';
+    health.degraded = mode === 'degraded';
+    health.strategy = mode === 'ok' ? 'pane-side' : mode === 'degraded' ? 'heuristica-estrutural' : 'nenhuma';
+    health.confidence = mode === 'ok' ? 96 : mode === 'degraded' ? 41 : 0;
+    health.rowsFound = mode === 'down' ? 0 : mode === 'degraded' ? 37 : 125;
+    health.lastError = mode === 'ok' ? null : 'pane não encontrado pelas estratégias 1–3';
+    store.actions.updateSettings({});
+    log(`saúde: ${mode}`);
+  };
+});
+
+const firstId = Object.keys(store.getState().contacts)[0];
+const dialogActions = {
+  tags: () => views.tags.openTagsManager(viewCtx),
+  tagPicker: () => views.tags.openTagPicker(viewCtx, firstId),
+  templates: () => views.templates.openTemplatesManager(viewCtx),
+  templatePicker: () => views.templates.openTemplatePicker(viewCtx, firstId),
+  followups: () => views.followups.openFollowupsList(viewCtx),
+  scheduler: () => views.followups.openFollowupScheduler(viewCtx, firstId),
+  notes: () => views.notes.openNoteEditor(viewCtx, firstId),
+  settings: () => views.settings.openSettings(viewCtx),
+  confirm: () => appRoot.dialogs.confirmDialog('Isto é um confirmDialog próprio. Nada de window.confirm.', { danger: true }).then((r) => log('confirm →', r)),
+  prompt: () => appRoot.dialogs.promptDialog('Digite alguma coisa', 'valor inicial').then((r) => log('prompt →', r))
+};
+painel.querySelectorAll('[data-dialog]').forEach((button) => {
+  button.onclick = () => dialogActions[button.dataset.dialog]();
+});
+
+/**
+ * Regressão do card duplicado ao arrastar entre colunas.
+ *
+ * Reproduz a ordem real do drop: o dnd re-parenteia o nó no DOM e SÓ DEPOIS o
+ * store é comitado (o que dispara o paint). Com um registro de cards por
+ * coluna, o destino não achava o card no próprio registro e criava um segundo
+ * nó, enquanto a origem falhava em remover o primeiro (o pai já era outro).
+ * O registro é do quadro inteiro justamente por causa disto.
+ */
+async function checkDrag(rounds = 20) {
+  const sr = appRoot.shadowRoot || document.getElementById('kanzapp-root').shadowRoot;
+  const sleep = (ms) => new Promise((r) => window.setTimeout(r, ms));
+  const cols = () => Array.from(sr.querySelectorAll('.kz-col'));
+  const ids = () => Array.from(sr.querySelectorAll('.kz-card')).map((c) => c.dataset.cardId);
+  const failures = [];
+
+  for (let i = 0; i < rounds; i += 1) {
+    const list = cols();
+    const from = list[i % list.length];
+    const to = list[(i * 3 + 1) % list.length];
+    if (!from || !to || from === to) continue;
+    const card = from.querySelector('.kz-col__body .kz-card');
+    if (!card) continue;
+    const id = card.dataset.cardId;
+    const target = to.querySelector('.kz-col__body');
+    const refs = Array.from(target.querySelectorAll('.kz-card'));
+    const at = Math.min(2, refs.length);
+    target.insertBefore(card, refs[at] || null);            // 1) o dnd move o nó
+    await store.actions.moveCard(id, to.dataset.columnId, at); // 2) o drop comita
+    await sleep(80);
+    const seen = ids();
+    const dup = [...new Set(seen.filter((v, j) => seen.indexOf(v) !== j))];
+    if (dup.length) failures.push({ round: i, moved: id, duplicated: dup });
+    const node = sr.querySelector('.kz-card[data-card-id="' + CSS.escape(id) + '"]');
+    if (node && node.closest('.kz-col').dataset.columnId !== to.dataset.columnId) {
+      failures.push({ round: i, moved: id, wrongColumn: true });
+    }
+  }
+
+  const state = store.getState();
+  const seen = ids();
+  const misplaced = seen.filter((id) => {
+    const node = sr.querySelector('.kz-card[data-card-id="' + CSS.escape(id) + '"]');
+    return state.cards[id] && node.closest('.kz-col').dataset.columnId !== state.cards[id].columnId;
+  });
+  const result = {
+    ok: failures.length === 0 && misplaced.length === 0,
+    rounds,
+    failures,
+    misplaced,
+    domCards: seen.length,
+    storeCards: Object.keys(state.cards).length
+  };
+  log('checkDrag →', result.ok ? 'OK' : 'FALHOU', JSON.stringify(result));
+  return result;
+}
+
+const shadowRoot = () => appRoot.shadow || document.getElementById('kanzapp-root').shadowRoot;
+const sleep = (ms) => new Promise((r) => window.setTimeout(r, ms));
+
+function pressEsc(target) {
+  (target || document.activeElement || document.body).dispatchEvent(
+    new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, composed: true, cancelable: true })
+  );
+}
+
+/**
+ * AUDIT-01 #3 — Esc tem de desfazer o TOPO da pilha, não fechar o quadro.
+ * Cobre: grab por teclado, busca preenchida, rename inline e, por último, o
+ * quadro em si.
+ */
+async function checkEscape() {
+  const sr = shadowRoot();
+  const falhas = [];
+  const aberto = () => !sr.querySelector('.kz-overlay').hidden;
+
+  appRoot.open();
+  await sleep(60);
+
+  // 1) card pego pelo teclado
+  const card = sr.querySelector('.kz-card');
+  const colunaAntes = card.closest('.kz-col').dataset.columnId;
+  card.focus();
+  card.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true, composed: true, cancelable: true }));
+  card.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, composed: true, cancelable: true }));
+  await sleep(60);
+  pressEsc(card);
+  await sleep(80);
+  if (!aberto()) falhas.push('Esc no grab de teclado fechou o quadro');
+  const depoisDoGrab = sr.querySelector(`.kz-card[data-card-id="${CSS.escape(card.dataset.cardId)}"]`);
+  if (depoisDoGrab && depoisDoGrab.closest('.kz-col').dataset.columnId !== colunaAntes) {
+    falhas.push('Esc no grab não devolveu o card para a coluna de origem');
+  }
+
+  // 1b) DOM e store têm de concordar depois do cancelamento (AUDIT-01 #12)
+  await sleep(1200);
+  const estado = store.getState();
+  const divergentes = Array.from(sr.querySelectorAll('.kz-card')).filter((node) => {
+    const id = node.dataset.cardId;
+    return estado.cards[id] && node.closest('.kz-col').dataset.columnId !== estado.cards[id].columnId;
+  }).map((node) => node.dataset.cardId);
+  if (divergentes.length) falhas.push(`DOM discorda do store em ${divergentes.length} card(s)`);
+
+  // 2) busca preenchida
+  const busca = sr.querySelector('.kz-search__input');
+  busca.focus();
+  busca.value = 'Ana';
+  busca.dispatchEvent(new Event('input', { bubbles: true }));
+  await sleep(200);
+  pressEsc(busca);
+  await sleep(80);
+  if (!aberto()) falhas.push('Esc na busca fechou o quadro');
+  if (busca.value !== '') falhas.push('Esc na busca não limpou o campo');
+
+  // 3) rename inline da coluna
+  const titulo = sr.querySelector('.kz-col__title');
+  titulo.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, composed: true }));
+  await sleep(80);
+  const input = sr.querySelector('.kz-col__head .kz-input');
+  if (!input) falhas.push('rename inline não abriu');
+  pressEsc(input || titulo);
+  await sleep(80);
+  if (!aberto()) falhas.push('Esc no rename inline fechou o quadro');
+  if (sr.querySelector('.kz-col__head .kz-input')) falhas.push('Esc no rename inline não cancelou a edição');
+
+  // 4) nada por cima: agora sim fecha
+  pressEsc(sr.querySelector('.kz-board'));
+  await sleep(80);
+  if (aberto()) falhas.push('Esc sem nada por cima não fechou o quadro');
+  appRoot.open();
+  await sleep(60);
+
+  const resultado = { ok: falhas.length === 0, falhas };
+  log('checkEscape →', resultado.ok ? 'OK' : 'FALHOU', JSON.stringify(resultado));
+  return resultado;
+}
+
+/** AUDIT-01 #6 — o texto do estado vazio tem de acompanhar o diagnóstico. */
+async function checkEmptyState() {
+  const sr = shadowRoot();
+  const cardsOriginais = JSON.parse(JSON.stringify(store.__raw().cards));
+  const contatosOriginais = JSON.parse(JSON.stringify(store.__raw().contacts));
+  const saudeOriginal = { ...health };
+
+  store.__commit((draft) => {
+    draft.cards = {};
+    draft.contacts = {};
+  });
+  await sleep(80);
+  const generico = sr.querySelector('.kz-empty--board .kz-empty__title');
+  const textoGenerico = generico ? generico.textContent : '';
+
+  health.ok = false;
+  health.degraded = true;
+  store.actions.updateSettings({});
+  await sleep(80);
+  const caido = sr.querySelector('.kz-empty--board .kz-empty__title');
+  const textoCaido = caido ? caido.textContent : '';
+
+  Object.assign(health, saudeOriginal);
+  store.__commit((draft) => {
+    draft.cards = cardsOriginais;
+    draft.contacts = contatosOriginais;
+  });
+  await sleep(80);
+
+  const resultado = {
+    ok: textoGenerico === 'Nenhuma conversa capturada ainda' && textoCaido === 'WhatsApp não detectado',
+    textoGenerico,
+    textoCaido
+  };
+  log('checkEmptyState →', resultado.ok ? 'OK' : 'FALHOU', JSON.stringify(resultado));
+  return resultado;
+}
+
+/**
+ * AUDIT-01 #12 — um `pointerup` perdido não pode congelar o quadro. Simula o
+ * arraste sem soltar e confere que o repaint volta sozinho.
+ */
+async function checkStuckDrag() {
+  const sr = shadowRoot();
+  const card = sr.querySelector('.kz-card');
+  const rect = card.getBoundingClientRect();
+  const opts = { bubbles: true, composed: true, cancelable: true, pointerId: 99, pointerType: 'mouse', button: 0, buttons: 1 };
+  card.dispatchEvent(new PointerEvent('pointerdown', { ...opts, clientX: rect.left + 10, clientY: rect.top + 10 }));
+  window.dispatchEvent(new PointerEvent('pointermove', { ...opts, clientX: rect.left + 90, clientY: rect.top + 60 }));
+  await sleep(60);
+  const arrastando = Boolean(sr.querySelector('.kz-card.is-dragging'));
+
+  // o pointerup nunca chega; a aba perde o foco
+  window.dispatchEvent(new Event('blur'));
+  await sleep(80);
+  const aindaArrastando = Boolean(sr.querySelector('.kz-card.is-dragging'));
+
+  // e o quadro volta a repintar
+  const antes = sr.querySelectorAll('.kz-card').length;
+  incrementalUpdate();
+  await sleep(200);
+  const depois = sr.querySelectorAll('.kz-card').length;
+
+  const resultado = {
+    ok: arrastando && !aindaArrastando && depois >= antes,
+    arrastouAntes: arrastando,
+    presoDepois: aindaArrastando,
+    cards: { antes, depois }
+  };
+  log('checkStuckDrag →', resultado.ok ? 'OK' : 'FALHOU', JSON.stringify(resultado));
+  return resultado;
+}
+
+/**
+ * Regressão de layout: nenhum texto pode pintar fora da caixa do próprio card
+ * ou do próprio container. Foi assim que a prévia vazou (span com
+ * `display: inline`, onde `overflow`/`text-overflow` são ignorados).
+ */
+function checkOverflow() {
+  const sr = shadowRoot();
+  const vazando = [];
+  const escopos = ['.kz-card', '.kz-col__head', '.kz-list__main', '.kz-toast', '.kz-dialog'];
+  for (const seletor of escopos) {
+    for (const container of sr.querySelectorAll(seletor)) {
+      const caixa = container.getBoundingClientRect();
+      if (caixa.width === 0) continue;
+      for (const filho of container.querySelectorAll('*')) {
+        const style = getComputedStyle(filho);
+        if (style.position === 'absolute' || style.position === 'fixed') continue;
+        if (style.display === 'none' || filho.hidden) continue;
+        const r = filho.getBoundingClientRect();
+        if (r.width === 0 && r.height === 0) continue;
+        const excedeDireita = r.right - caixa.right;
+        const excedeEsquerda = caixa.left - r.left;
+        if (excedeDireita > 1 || excedeEsquerda > 1) {
+          vazando.push({
+            escopo: seletor,
+            classe: filho.className,
+            display: style.display,
+            excede: Math.round(Math.max(excedeDireita, excedeEsquerda)),
+            largura: Math.round(r.width),
+            limite: Math.round(caixa.width)
+          });
+        }
+      }
+    }
+  }
+  const resultado = { ok: vazando.length === 0, total: vazando.length, amostra: vazando.slice(0, 6) };
+  log('checkOverflow →', resultado.ok ? 'OK' : `FALHOU (${vazando.length} elementos)`, JSON.stringify(resultado.amostra));
+  return resultado;
+}
+
+/** Abre o diálogo de cor + limite WIP da primeira coluna. */
+async function openColumnOptions() {
+  const sr = shadowRoot();
+  const botao = sr.querySelector('.kz-col__actions .kz-iconbtn[aria-label="Cor e limite WIP da coluna"]');
+  if (botao) botao.click();
+  await sleep(120);
+  return sr.querySelector('.kz-dialog');
+}
+
+/** AUDIT-01 #8 — o limite WIP tem de ser configurável pela interface. */
+async function checkWipLimit() {
+  const sr = shadowRoot();
+  const dialogo = await openColumnOptions();
+  const input = dialogo && dialogo.querySelector('input[type="number"]');
+  const antes = store.getState().columns[0].wipLimit;
+  if (input) {
+    input.value = '7';
+    dialogo.querySelector('[data-action="save"]').click();
+  }
+  await sleep(150);
+  const depois = store.getState().columns[0].wipLimit;
+  const badge = sr.querySelector('.kz-col .kz-col__badge');
+  const resultado = {
+    ok: Boolean(input) && depois === 7 && /\/7$/.test(badge.textContent),
+    tinhaCampo: Boolean(input),
+    antes,
+    depois,
+    badge: badge.textContent,
+    estourado: badge.classList.contains('is-over')
+  };
+  await store.actions.setColumnColor(store.getState().columns[0].id, store.getState().columns[0].color);
+  store.__commit((draft) => {
+    draft.columns[0].wipLimit = antes;
+  });
+  await sleep(80);
+  log('checkWipLimit →', resultado.ok ? 'OK' : 'FALHOU', JSON.stringify(resultado));
+  return resultado;
+}
+
+/**
+ * ROADMAP §1 — a captura de conversas abre um diálogo com contador vivo, o
+ * botão "Parar" encerra a varredura e o quadro volta ao normal (botão
+ * reabilitado, diálogo fechado, toast de resultado).
+ */
+async function checkSweep() {
+  const sr = shadowRoot();
+  const falhas = [];
+  const botao = Array.from(sr.querySelectorAll('.kz-header .kz-btn'))
+    .find((b) => b.getAttribute('aria-label') === 'Capturar conversas');
+  if (!botao) {
+    falhas.push('botão "Capturar conversas" não existe no cabeçalho');
+  } else {
+    botao.click();
+    await sleep(60);
+    if (!sr.querySelector('.kz-dialog .kz-sweep')) falhas.push('diálogo da captura não abriu');
+    if (!botao.disabled) falhas.push('botão da captura continuou clicável durante a varredura');
+    await sleep(120);
+    const contador = sr.querySelector('.kz-sweep__count');
+    if (!contador || !(Number(contador.textContent) > 0)) falhas.push('contador de encontrados não avançou');
+    const parar = sr.querySelector('.kz-dialog [data-action="stop"]');
+    if (!parar) falhas.push('diálogo da captura não tem botão Parar');
+    else parar.click();
+    await sleep(300);
+    if (sr.querySelector('.kz-dialog .kz-sweep')) falhas.push('diálogo continuou aberto depois de parar');
+    if (botao.disabled) falhas.push('botão da captura ficou travado depois do fim');
+    if (!sr.querySelector('.kz-toast')) falhas.push('nenhum toast com o resultado da captura');
+  }
+  const resultado = { ok: falhas.length === 0, falhas };
+  log('checkSweep →', resultado.ok ? 'OK' : 'FALHOU', JSON.stringify(resultado));
+  return resultado;
+}
+
+/**
+ * ROADMAP §5 — mover um card oferece "Desfazer" no toast, e Ctrl+Z/Ctrl+Shift+Z
+ * funcionam dentro do quadro. O desfazer passa por `store.actions`, então o
+ * store falso é quem prova que o card voltou.
+ */
+async function checkUndo() {
+  const sr = shadowRoot();
+  const falhas = [];
+  appRoot.open();
+  await sleep(60);
+
+  const tecla = (alvo, key, extra = {}) => alvo.dispatchEvent(
+    new KeyboardEvent('keydown', { key, bubbles: true, composed: true, cancelable: true, ...extra })
+  );
+
+  const card = sr.querySelector('.kz-col .kz-col__body .kz-card');
+  const id = card.dataset.cardId;
+  const origem = store.getState().cards[id].columnId;
+  card.focus();
+  tecla(card, ' ');
+  tecla(card, 'ArrowRight');
+  await sleep(250);
+  tecla(card, ' '); // solta o grab
+  const destino = store.getState().cards[id].columnId;
+  if (destino === origem) falhas.push('movimento pelo teclado não chegou ao store');
+
+  const botao = Array.from(sr.querySelectorAll('.kz-toast .kz-btn'))
+    .find((b) => b.textContent === 'Desfazer');
+  if (!botao) {
+    falhas.push('o toast do movimento não ofereceu "Desfazer"');
+  } else {
+    botao.click();
+    await sleep(300);
+    if (store.getState().cards[id].columnId !== origem) {
+      falhas.push('"Desfazer" não devolveu o card para a coluna de origem');
+    }
+  }
+
+  // Ctrl+Shift+Z refaz, Ctrl+Z desfaz de novo
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, shiftKey: true, bubbles: true, cancelable: true }));
+  await sleep(300);
+  const refeito = store.getState().cards[id].columnId;
+  if (refeito !== destino) falhas.push('Ctrl+Shift+Z não refez o movimento');
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true, cancelable: true }));
+  await sleep(300);
+  if (store.getState().cards[id].columnId !== origem) falhas.push('Ctrl+Z não desfez o movimento');
+
+  const resultado = { ok: falhas.length === 0, falhas, origem, destino };
+  log('checkUndo →', resultado.ok ? 'OK' : 'FALHOU', JSON.stringify(resultado));
+  return resultado;
+}
+
+/**
+ * ROADMAP §3 — a busca enxerga nota e tag e entende os prefixos. O filtro é
+ * responsabilidade do `store.select`, então esta checagem também prova que o
+ * board está mesmo confiando nele (AUDIT-01 #11).
+ */
+async function checkSearch() {
+  const sr = shadowRoot();
+  const falhas = [];
+  const busca = sr.querySelector('.kz-search__input');
+  const cards = () => Array.from(sr.querySelectorAll('.kz-card'));
+
+  async function digitar(texto) {
+    busca.value = texto;
+    busca.dispatchEvent(new Event('input', { bubbles: true }));
+    await sleep(260);
+  }
+
+  await digitar('tag:vip');
+  const comTag = cards();
+  if (comTag.length === 0) falhas.push('tag:vip não devolveu card nenhum');
+  const semPilula = comTag.filter((card) => !Array.from(card.querySelectorAll('.kz-pill'))
+    .some((p) => p.textContent === 'VIP'));
+  if (semPilula.length) falhas.push(`${semPilula.length} card(s) sem a tag VIP passaram pelo filtro tag:`);
+
+  await digitar('nota:retorno');
+  const comNota = cards();
+  if (comNota.length === 0) falhas.push('nota:retorno não devolveu card nenhum');
+  const semNota = comNota.filter((card) => !card.querySelector('[title="Tem nota interna"]:not([hidden])'));
+  if (semNota.length) falhas.push(`${semNota.length} card(s) sem nota passaram pelo filtro nota:`);
+
+  await digitar('retorno');
+  if (cards().length === 0) falhas.push('busca livre não achou o texto da nota');
+
+  await digitar('foo:bar');
+  if (cards().length !== 0) falhas.push('prefixo desconhecido deveria ser texto literal e não achar nada');
+
+  await digitar('');
+  if (cards().length === 0) falhas.push('limpar a busca não devolveu os cards');
+
+  const resultado = { ok: falhas.length === 0, falhas };
+  log('checkSearch →', resultado.ok ? 'OK' : 'FALHOU', JSON.stringify(resultado));
+  return resultado;
+}
+
+const filtroPorRotulo = (texto) => Array.from(shadowRoot().querySelectorAll('.kz-switch'))
+  .find((label) => label.textContent.trim() === texto);
+
+/** ROADMAP §6 — esconder grupos é filtro de exibição: nada some do store. */
+async function checkGroups() {
+  const sr = shadowRoot();
+  const falhas = [];
+  const antesStore = Object.values(store.getState().contacts).filter((c) => c.isGroup).length;
+  const visiveisComGrupo = sr.querySelectorAll('.kz-card').length;
+
+  const label = filtroPorRotulo('Sem grupos');
+  const check = label && label.querySelector('input');
+  if (!check) {
+    falhas.push('não existe a alternância "Sem grupos" na barra de filtros');
+  } else {
+    check.click();
+    await sleep(200);
+    const visiveisSemGrupo = sr.querySelectorAll('.kz-card').length;
+    if (!(visiveisSemGrupo < visiveisComGrupo)) falhas.push('ligar "Sem grupos" não escondeu card nenhum');
+    if (store.getState().settings.hideGroups !== true) falhas.push('a preferência hideGroups não foi salva');
+    if (Object.values(store.getState().contacts).filter((c) => c.isGroup).length !== antesStore) {
+      falhas.push('o filtro apagou grupos do store — deveria ser só exibição');
+    }
+    check.click();
+    await sleep(200);
+    if (sr.querySelectorAll('.kz-card').length !== visiveisComGrupo) {
+      falhas.push('desligar o filtro não devolveu os cards de grupo');
+    }
+  }
+  const resultado = { ok: falhas.length === 0, falhas, gruposNoStore: antesStore };
+  log('checkGroups →', resultado.ok ? 'OK' : 'FALHOU', JSON.stringify(resultado));
+  return resultado;
+}
+
+/** ROADMAP §7 — arquivar tira do quadro sem apagar, e é reversível. */
+async function checkArchive() {
+  const sr = shadowRoot();
+  const falhas = [];
+  const card = sr.querySelector('.kz-card');
+  const id = card.dataset.cardId;
+  const botao = card.querySelector('[data-card-action="archive"]');
+  if (!botao) {
+    falhas.push('o card não tem ação de arquivar');
+  } else {
+    botao.click();
+    await sleep(250);
+    if (store.getState().cards[id].archived !== true) falhas.push('arquivar não chegou ao store');
+    if (store.getState().contacts[id] === undefined) falhas.push('arquivar apagou o contato');
+    if (sr.querySelector(`.kz-card[data-card-id="${CSS.escape(id)}"]`)) {
+      falhas.push('card arquivado continuou visível com "Ver arquivados" desligado');
+    }
+
+    const label = filtroPorRotulo('Ver arquivados');
+    const check = label && label.querySelector('input');
+    if (!check) {
+      falhas.push('não existe a alternância "Ver arquivados"');
+    } else {
+      check.click();
+      await sleep(220);
+      const voltou = sr.querySelector(`.kz-card[data-card-id="${CSS.escape(id)}"]`);
+      if (!voltou) falhas.push('"Ver arquivados" não trouxe o card de volta');
+      else if (!voltou.classList.contains('is-archived')) falhas.push('card arquivado não ficou esmaecido');
+      // desarquiva pelo próprio card
+      if (voltou) {
+        voltou.querySelector('[data-card-action="archive"]').click();
+        await sleep(250);
+        if (store.getState().cards[id].archived !== false) falhas.push('desarquivar não funcionou');
+      }
+      check.click();
+      await sleep(200);
+    }
+  }
+  const resultado = { ok: falhas.length === 0, falhas, id };
+  log('checkArchive →', resultado.ok ? 'OK' : 'FALHOU', JSON.stringify(resultado));
+  return resultado;
+}
+
+/**
+ * ROADMAP §4 — seleção múltipla + barra de lote. Cobre Ctrl+clique, Shift+
+ * intervalo, uma escrita por ação, desfazer e Esc limpando a seleção.
+ */
+async function checkBulk() {
+  const sr = shadowRoot();
+  const falhas = [];
+  appRoot.open();
+  await sleep(60);
+
+  const coluna = sr.querySelector('.kz-col');
+  const cards = Array.from(coluna.querySelectorAll('.kz-col__body .kz-card')).slice(0, 4);
+  if (cards.length < 4) return { ok: false, falhas: ['coluna sem cards suficientes'] };
+  const clique = (node, init) => node.dispatchEvent(
+    new MouseEvent('click', { bubbles: true, composed: true, cancelable: true, ...init })
+  );
+
+  clique(cards[0], { ctrlKey: true });
+  await sleep(120);
+  clique(cards[2], { shiftKey: true });
+  await sleep(150);
+
+  const barra = sr.querySelector('.kz-bulk');
+  if (!barra || barra.hidden) falhas.push('a barra de lote não apareceu');
+  const contador = sr.querySelector('.kz-bulk__count');
+  if (contador && contador.textContent !== '3') falhas.push(`intervalo com Shift selecionou ${contador && contador.textContent} em vez de 3`);
+  const marcados = Array.from(sr.querySelectorAll('.kz-card[aria-selected="true"]'));
+  if (marcados.length !== 3) falhas.push(`aria-selected em ${marcados.length} cards, esperado 3`);
+
+  const ids = marcados.map((n) => n.dataset.cardId);
+  const origens = ids.map((id) => store.getState().cards[id].columnId);
+  const destino = store.getState().columns.find((c) => c.id !== origens[0]).id;
+
+  // "Toda ação em lote é UMA mutação" (§4): conta commits e registra quais
+  // ações do store foram chamadas, para a falha dizer o que sobrou.
+  let escritas = 0;
+  const chamadas = [];
+  const originais = {};
+  for (const nome of ['moveCards', 'moveCard', 'updateSettings', 'setArchived', 'addTagToCards', 'removeTagFromCards', 'setCardTags']) {
+    originais[nome] = store.actions[nome];
+    store.actions[nome] = (...args) => {
+      chamadas.push(nome);
+      return originais[nome](...args);
+    };
+  }
+  const unsub = store.subscribe(() => { escritas += 1; });
+  const mover = Array.from(barra.querySelectorAll('.kz-btn')).find((b) => b.textContent.includes('Mover para'));
+  mover.click();
+  await sleep(150);
+  const dialogo = sr.querySelector('.kz-dialog');
+  const opcao = dialogo && dialogo.querySelector(`[data-action="${destino}"]`);
+  if (!opcao) falhas.push('o diálogo de mover não ofereceu as colunas');
+  else opcao.click();
+  await sleep(300);
+  unsub();
+  for (const nome of Object.keys(originais)) store.actions[nome] = originais[nome];
+  if (escritas !== 1) falhas.push(`ação em lote gerou ${escritas} mutações, esperado 1`);
+  const moveu = ids.every((id) => store.getState().cards[id].columnId === destino);
+  if (!moveu) falhas.push('nem todos os cards foram para a coluna de destino');
+  if (!barra.hidden) falhas.push('a barra continuou visível depois da ação');
+
+  const desfazer = Array.from(sr.querySelectorAll('.kz-toast .kz-btn')).find((b) => b.textContent === 'Desfazer');
+  if (!desfazer) {
+    falhas.push('lote não ofereceu Desfazer');
+  } else {
+    desfazer.click();
+    await sleep(350);
+    const voltou = ids.every((id, i) => store.getState().cards[id].columnId === origens[i]);
+    if (!voltou) falhas.push('desfazer do lote não devolveu todos os cards');
+  }
+
+  // Esc limpa a seleção antes de fechar o quadro (pilha do Esc, §4)
+  const cardsDepois = Array.from(sr.querySelectorAll('.kz-col .kz-col__body .kz-card')).slice(0, 2);
+  clique(cardsDepois[0], { ctrlKey: true });
+  clique(cardsDepois[1], { ctrlKey: true });
+  await sleep(150);
+  pressEsc(sr.querySelector('.kz-board'));
+  await sleep(150);
+  if (sr.querySelectorAll('.kz-card[aria-selected="true"]').length !== 0) falhas.push('Esc não limpou a seleção');
+  if (sr.querySelector('.kz-overlay').hidden) falhas.push('Esc fechou o quadro em vez de limpar a seleção');
+
+  const resultado = { ok: falhas.length === 0, falhas, escritas, chamadas };
+  log('checkBulk →', resultado.ok ? 'OK' : 'FALHOU', JSON.stringify(resultado));
+  return resultado;
+}
+
+/** Roda todas as checagens automatizáveis desta bancada. */
+async function checkAll() {
+  const resultados = {
+    drag: await checkDrag(20),
+    escape: await checkEscape(),
+    emptyState: await checkEmptyState(),
+    stuckDrag: await checkStuckDrag(),
+    wipLimit: await checkWipLimit(),
+    sweep: await checkSweep(),
+    search: await checkSearch(),
+    undo: await checkUndo(),
+    groups: await checkGroups(),
+    archive: await checkArchive(),
+    bulk: await checkBulk(),
+    overflow: checkOverflow(),
+    diff: checkDiff()
+  };
+  resultados.pass = Object.values(resultados).every((r) => r === true || r.ok !== false);
+  log('checkAll →', resultados.pass ? 'APROVADO' : 'REPROVADO');
+  window.__uiHarnessResults = resultados;
+  return resultados;
+}
+
+window.__uiHarness = {
+  store,
+  adapter,
+  composer,
+  appRoot,
+  viewCtx,
+  views,
+  health,
+  update: incrementalUpdate,
+  checkDiff,
+  checkDrag,
+  checkEscape,
+  checkEmptyState,
+  checkStuckDrag,
+  checkOverflow,
+  checkWipLimit,
+  checkSweep,
+  checkSearch,
+  checkUndo,
+  checkGroups,
+  checkArchive,
+  checkBulk,
+  checkAll,
+  sweeper,
+  openColumnOptions,
+  snapshotNodes,
+  open: () => appRoot.open(),
+  close: () => appRoot.close(),
+  setTheme: (value) => store.actions.updateSettings({ theme: value }),
+  setDensity: (value) => store.actions.updateSettings({ density: value }),
+  setWhatsAppTheme: (value) => {
+    waTheme = value;
+    store.actions.updateSettings({});
+  },
+  openDialog: (name) => dialogActions[name] && dialogActions[name](),
+  state: () => store.getState()
+};
+
+document.getElementById('btn-checkall').onclick = () => checkAll();
+
+// `?open=coluna` deixa um diálogo aberto para inspeção visual/screenshot.
+if (new URLSearchParams(location.search).get('open') === 'coluna') {
+  window.setTimeout(openColumnOptions, 200);
+}
+
+// Modo automatizado: `?auto=1` roda checkAll e despeja o resultado em
+// #auto-results, para um navegador headless conseguir ler sem console.
+if (new URLSearchParams(location.search).get('auto') === '1') {
+  (async () => {
+    const saida = await checkAll();
+    const alvo = document.getElementById('auto-results');
+    alvo.hidden = false;
+    alvo.textContent = `AUTO_RESULTS_BEGIN${JSON.stringify(saida)}AUTO_RESULTS_END`;
+  })();
+}
+
+/*
+ * `?shot=<estado>` — modo captura para os prints da loja.
+ * Esconde os controles da bancada e deixa só o quadro em cena, no tema e com o
+ * dialogo pedidos. Os dados sao os 120 contatos sinteticos: nenhum print da
+ * loja pode sair com conversa real.
+ */
+const SHOTS = {
+  quadro: { theme: 'light' },
+  escuro: { theme: 'dark' },
+  tags: { theme: 'light', dialog: 'tags' },
+  modelos: { theme: 'light', dialog: 'templates' },
+  followups: { theme: 'light', dialog: 'followups' },
+  ajustes: { theme: 'light', dialog: 'settings' }
+};
+
+const shotName = new URLSearchParams(location.search).get('shot');
+if (shotName && SHOTS[shotName]) {
+  const shot = SHOTS[shotName];
+  const painelEl = document.querySelector('.wrap');
+  if (painelEl) painelEl.style.display = 'none';
+  document.body.style.background = shot.theme === 'dark' ? '#0b141a' : '#dfe5ea';
+  store.actions.updateSettings({ theme: shot.theme });
+  appRoot.open();
+  if (shot.dialog) window.setTimeout(() => dialogActions[shot.dialog](), 250);
+  // sinaliza para o capturador que a cena esta montada
+  window.setTimeout(() => { window.__shotReady = true; }, 900);
+}
+
+log('bancada pronta — window.__uiHarness disponível');
+</script>
+</body>
+</html>

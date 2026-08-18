@@ -1,29 +1,56 @@
 {
   "manifest_version": 3,
-  "name": "KanZapp - CRM Kanban para WhatsApp",
-  "version": "1.2",
-  "description": "Transforme seu WhatsApp Web em um CRM de alta performance com funil de vendas Kanban, tags e mensagens rápidas.",
-  "permissions": ["storage", "activeTab", "notifications", "alarms"],
+  "name": "KanZapp — CRM Kanban para WhatsApp",
+  "version": "2.0.0",
+  "description": "Transforme o WhatsApp Web em um CRM Kanban: funil de vendas, tags, notas, mensagens prontas e lembretes.",
+  "minimum_chrome_version": "109",
+  "permissions": ["storage", "alarms", "notifications"],
+  "host_permissions": ["https://web.whatsapp.com/*"],
   "background": {
-    "service_worker": "src/background/index.js"
+    "service_worker": "src/background/index.js",
+    "type": "module"
+  },
+  "icons": {
+    "16": "assets/icon16.png",
+    "48": "assets/icon48.png",
+    "128": "assets/icon128.png"
+  },
+  "action": {
+    "default_title": "Abrir o board do KanZapp (Ctrl+Shift+K)",
+    "default_icon": {
+      "16": "assets/icon16.png",
+      "48": "assets/icon48.png",
+      "128": "assets/icon128.png"
+    }
   },
   "content_scripts": [
     {
       "matches": ["https://web.whatsapp.com/*"],
-      "js": [
-        "src/content/storage.js",
-        "src/content/scraper.js",
-        "src/content/tags.js",
-        "src/content/messages.js",
-        "src/content/followup.js",
-        "src/content/notes.js",
-        "src/content/kanban.js",
-        "src/content/main.js"
-      ],
-      "css": ["src/content/styles.css"]
+      "js": ["src/content/boot.js"],
+      "run_at": "document_idle",
+      "all_frames": false
     }
   ],
-  "action": {
-    "default_title": "WhatsApp Kanban"
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "src/content/*",
+        "src/core/*",
+        "src/ui/*",
+        "src/ui/views/*",
+        "src/wa/*",
+        "assets/*"
+      ],
+      "matches": ["https://web.whatsapp.com/*"]
+    }
+  ],
+  "commands": {
+    "toggle-board": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+K",
+        "mac": "Command+Shift+K"
+      },
+      "description": "Abrir/fechar o board do KanZapp"
+    }
   }
 }

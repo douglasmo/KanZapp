@@ -1,0 +1,15 @@
+{
+  "name": "kanzapp",
+  "version": "2.0.0",
+  "description": "KanZapp - CRM Kanban para WhatsApp Web (extensao MV3, sem dependencias de runtime)",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node tools/check-package.mjs && node tests/run.mjs",
+    "check": "node tests/run.mjs",
+    "pack": "node tools/pack.mjs",
+    "check:package": "node tools/check-package.mjs",
+    "store:images": "node tools/make-store-images.mjs"
+  },
+  "license": "UNLICENSED"
+}

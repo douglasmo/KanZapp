@@ -1,0 +1,28 @@
+# Dependências locais
+node_modules/
+
+# Saídas de build, empacotamento e cobertura
+dist/
+coverage/
+
+# Configurações locais e segredos
+.claude/
+.env
+.env.*
+!.env.example
+
+# Logs e arquivos temporários
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.tmp
+*.temp
+
+# Sistema operacional e editores
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/

@@ -1,0 +1,477 @@
+<!doctype html>
+<!--
+  Bancada de layout do KanZapp.
+
+  Monta 3 markups diferentes do WhatsApp Web e roda o adapter contra cada um,
+  medindo quantos contatos ele extrai com o nome correto.
+
+  Como abrir (precisa de servidor estático: ESM não carrega por file://):
+
+      cd <raiz do projeto>
+      python -m http.server 8000        # ou: npx --yes serve .
+      # abra http://localhost:8000/tests/harness.html
+
+  Critério de aceite (contrato, seção 8.2):
+    layout-a >= 90% | layout-b >= 90% | layout-c >= 60%
+    e listChats() < 15 ms para 100 linhas.
+
+  Resultado legível por automação em: window.__harnessResults
+-->
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>KanZapp — bancada de layout</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --ok: #0a7d55;
+        --bad: #c0392b;
+        --warn: #b26a00;
+        --line: #dfe5e8;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font: 14px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+        color: #111b21;
+        background: #f0f2f5;
+      }
+      #stage {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 380px;
+        height: 100vh;
+        overflow: hidden;
+        border-right: 1px solid var(--line);
+        background: #fff;
+      }
+      #stage > * { height: 100%; }
+      #report {
+        margin-left: 396px;
+        padding: 16px 20px 48px;
+        max-width: 1100px;
+      }
+      h1 { font-size: 18px; margin: 8px 0 4px; }
+      h2 { font-size: 15px; margin: 24px 0 8px; }
+      p.sub { color: #54656f; margin: 0 0 16px; }
+      .card {
+        background: #fff;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 14px 16px;
+        margin-bottom: 14px;
+      }
+      .row { display: flex; gap: 16px; flex-wrap: wrap; align-items: baseline; }
+      .pill {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: 999px;
+        font-size: 12px;
+        font-weight: 600;
+        color: #fff;
+      }
+      .pill.ok { background: var(--ok); }
+      .pill.bad { background: var(--bad); }
+      .pill.warn { background: var(--warn); }
+      .scroll { overflow-x: auto; }
+      table { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 620px; }
+      th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+      th { font-weight: 600; color: #54656f; background: #f7f9fa; }
+      td.miss { color: var(--bad); font-weight: 600; }
+      code { font: 12px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace; }
+      pre {
+        margin: 8px 0 0;
+        padding: 10px;
+        background: #10161a;
+        color: #dfe7ea;
+        border-radius: 8px;
+        overflow-x: auto;
+        font: 12px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace;
+      }
+      .muted { color: #667781; }
+      button {
+        font: inherit;
+        padding: 6px 12px;
+        border-radius: 8px;
+        border: 1px solid var(--line);
+        background: #fff;
+        cursor: pointer;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="stage"></div>
+    <div id="report"><p class="sub">Executando…</p></div>
+    <!-- preenchido só com ?auto=1, para leitura por navegador headless -->
+    <pre id="auto-results" hidden></pre>
+
+    <script type="module">
+      import { installChromeStub } from './chrome-stub.mjs';
+      import { createWhatsAppAdapter } from '../src/wa/adapter.js';
+      import { normalizeForMatch } from '../src/core/utils.js';
+      import layoutA from './fixtures/layout-a.js';
+      import layoutB from './fixtures/layout-b.js';
+      import layoutC from './fixtures/layout-c.js';
+      import layoutD from './fixtures/layout-d.js';
+      import layoutE from './fixtures/layout-e.js';
+
+      // o contrato pede o stub de chrome injetado na bancada
+      installChromeStub({ initial: {} });
+
+      const LIMITES = {
+        'layout-a': 0.9,
+        'layout-b': 0.9,
+        'layout-c': 0.6,
+        'layout-d': 0.9,
+        'layout-e': 0.9
+      };
+      const PERF_BUDGET_MS = 15;
+
+      const stage = document.getElementById('stage');
+      const report = document.getElementById('report');
+      const adapter = createWhatsAppAdapter({});
+
+      function clearNode(node) {
+        while (node.firstChild) node.removeChild(node.firstChild);
+      }
+
+      function h(tag, props = {}, children = []) {
+        const el = document.createElement(tag);
+        for (const [key, value] of Object.entries(props)) {
+          if (key === 'class') el.className = value;
+          else if (key === 'text') el.appendChild(document.createTextNode(String(value)));
+          else el.setAttribute(key, value);
+        }
+        for (const child of children) {
+          if (child === null || child === undefined) continue;
+          el.appendChild(typeof child === 'string' ? document.createTextNode(child) : child);
+        }
+        return el;
+      }
+
+      function mount(fixture, options) {
+        clearNode(stage);
+        stage.appendChild(fixture.build(document, options || {}));
+        // força layout antes de medir
+        void stage.offsetHeight;
+      }
+
+      function compare(fixture, chats) {
+        const extraidos = chats.map((c) => ({ ...c, key: normalizeForMatch(c.name) }));
+        const usados = new Set();
+        const linhas = fixture.expected.map((esperado) => {
+          const key = normalizeForMatch(esperado.name);
+          const achado = extraidos.find((c, i) => c.key === key && !usados.has(i));
+          const idx = extraidos.findIndex((c, i) => c.key === key && !usados.has(i));
+          if (idx >= 0) usados.add(idx);
+          return {
+            esperado: esperado.name,
+            extraido: achado ? achado.name : '',
+            ok: Boolean(achado),
+            unreadEsperado: esperado.unread ?? 0,
+            unreadExtraido: achado ? achado.unread : null,
+            unreadOk: achado ? achado.unread === (esperado.unread ?? 0) : false,
+            previewEsperado: esperado.preview || '',
+            previewExtraido: achado ? achado.preview : '',
+            previewOk: achado ? achado.preview === (esperado.preview || '') : false,
+            idKind: achado ? achado.idKind : ''
+          };
+        });
+        const acertos = linhas.filter((l) => l.ok).length;
+        const extras = extraidos.filter((_, i) => !usados.has(i)).map((c) => c.name);
+        return {
+          linhas,
+          acertos,
+          total: fixture.expected.length,
+          accuracy: fixture.expected.length ? acertos / fixture.expected.length : 0,
+          unreadAccuracy: linhas.filter((l) => l.unreadOk).length / (linhas.length || 1),
+          previewAccuracy: linhas.filter((l) => l.previewOk).length / (linhas.length || 1),
+          extras
+        };
+      }
+
+      function rodar(fixture) {
+        mount(fixture);
+        adapter.reset();
+        const t0 = performance.now();
+        const chats = adapter.listChats();
+        const ms = performance.now() - t0;
+        const comparacao = compare(fixture, chats);
+        return {
+          id: fixture.id,
+          title: fixture.title,
+          description: fixture.description,
+          ms: Number(ms.toFixed(2)),
+          limite: LIMITES[fixture.id] ?? 0.9,
+          passou: comparacao.accuracy >= (LIMITES[fixture.id] ?? 0.9),
+          ...comparacao,
+          extraidos: chats,
+          health: adapter.health,
+          diagnostics: adapter.diagnostics()
+        };
+      }
+
+      function medirPerformance() {
+        mount(layoutA, { repeat: 10 });
+        adapter.reset();
+        // duas passadas de aquecimento: a primeira compilação a frio já fez o
+        // veredito piscar vermelho por 1 ms de diferença
+        adapter.listChats();
+        adapter.listChats();
+        const amostras = [];
+        for (let i = 0; i < 5; i += 1) {
+          const t0 = performance.now();
+          const chats = adapter.listChats();
+          amostras.push({ ms: performance.now() - t0, linhas: chats.length });
+        }
+        const media = amostras.reduce((a, s) => a + s.ms, 0) / amostras.length;
+        const melhor = Math.min(...amostras.map((s) => s.ms));
+        return {
+          linhas: amostras[0].linhas,
+          mediaMs: Number(media.toFixed(2)),
+          melhorMs: Number(melhor.toFixed(2)),
+          orcamentoMs: PERF_BUDGET_MS,
+          ok: media < PERF_BUDGET_MS
+        };
+      }
+
+      function pill(ok, textoOk, textoBad) {
+        return h('span', { class: `pill ${ok ? 'ok' : 'bad'}`, text: ok ? textoOk : textoBad });
+      }
+
+      function tabela(resultado) {
+        const head = h('tr', {}, [
+          h('th', { text: '#' }),
+          h('th', { text: 'esperado' }),
+          h('th', { text: 'extraído' }),
+          h('th', { text: 'nome' }),
+          h('th', { text: 'não lidas' }),
+          h('th', { text: 'prévia' }),
+          h('th', { text: 'id' })
+        ]);
+        const corpo = resultado.linhas.map((linha, i) =>
+          h('tr', {}, [
+            h('td', { text: String(i + 1) }),
+            h('td', { text: linha.esperado }),
+            h('td', { class: linha.ok ? '' : 'miss', text: linha.extraido || '— nada —' }),
+            h('td', { text: linha.ok ? '✓' : '✗' }),
+            h('td', {
+              text: `${linha.unreadExtraido === null ? '—' : linha.unreadExtraido} / ${linha.unreadEsperado} ${linha.unreadOk ? '✓' : '✗'}`
+            }),
+            h('td', { text: linha.previewOk ? '✓' : `✗ ${linha.previewExtraido || '—'}` }),
+            h('td', { text: linha.idKind || '—' })
+          ])
+        );
+        return h('div', { class: 'scroll' }, [
+          h('table', {}, [h('thead', {}, [head]), h('tbody', {}, corpo)])
+        ]);
+      }
+
+      function render(resultados, perf, aprovado) {
+        clearNode(report);
+        report.appendChild(h('h1', { text: 'KanZapp — bancada de resiliência de layout' }));
+        report.appendChild(
+          h('p', {
+            class: 'sub',
+            text: 'O mesmo adapter roda contra três markups diferentes. À esquerda fica o fixture montado.'
+          })
+        );
+
+        report.appendChild(
+          h('div', { class: 'card' }, [
+            h('div', { class: 'row' }, [
+              h('strong', { text: 'Resultado geral: ' }),
+              pill(aprovado, 'APROVADO', 'REPROVADO'),
+              h('span', { class: 'muted', text: `perf: ${perf.mediaMs} ms para ${perf.linhas} linhas (orçamento ${perf.orcamentoMs} ms)` }),
+              pill(perf.ok, 'dentro do orçamento', 'acima do orçamento')
+            ])
+          ])
+        );
+
+        for (const resultado of resultados) {
+          const pct = `${Math.round(resultado.accuracy * 100)}%`;
+          const card = h('div', { class: 'card' }, [
+            h('h2', { text: `${resultado.title}` }),
+            h('p', { class: 'muted', text: resultado.description }),
+            h('div', { class: 'row' }, [
+              pill(resultado.passou, `nomes ${pct}`, `nomes ${pct}`),
+              h('span', { class: 'muted', text: `mínimo ${Math.round(resultado.limite * 100)}%` }),
+              h('span', { class: 'muted', text: `não lidas ${Math.round(resultado.unreadAccuracy * 100)}%` }),
+              h('span', { class: 'muted', text: `prévia ${Math.round(resultado.previewAccuracy * 100)}%` }),
+              h('span', { class: 'muted', text: `${resultado.ms} ms` })
+            ]),
+            h('div', { class: 'row' }, [
+              h('span', { class: 'muted', text: `estratégia: ${resultado.health.strategy || '—'}` }),
+              h('span', { class: 'muted', text: `confiança: ${resultado.health.confidence}` }),
+              h('span', {
+                class: 'muted',
+                text: `qualidade: ${resultado.health.quality == null ? '—' : Math.round(resultado.health.quality * 100) + '%'}`
+              }),
+              h('span', {
+                class: `pill ${resultado.health.degraded ? 'warn' : 'ok'}`,
+                text: resultado.health.degraded ? 'degradado' : 'saudável'
+              }),
+              resultado.extras.length
+                ? h('span', { class: 'muted', text: `extras: ${resultado.extras.join(', ')}` })
+                : null
+            ]),
+            tabela(resultado)
+          ]);
+          report.appendChild(card);
+        }
+
+        report.appendChild(
+          h('div', { class: 'card' }, [
+            h('h2', { text: 'window.__harnessResults' }),
+            h('p', { class: 'muted', text: 'Mesmo conteúdo em JSON, para leitura automatizada.' }),
+            h('pre', { text: JSON.stringify(window.__harnessResults, null, 2) })
+          ])
+        );
+      }
+
+      function executar() {
+        const resultados = [layoutA, layoutB, layoutC, layoutD, layoutE].map(rodar);
+        const perf = medirPerformance();
+        const aprovado = resultados.every((r) => r.passou) && perf.ok;
+
+        window.__harnessResults = {
+          at: new Date().toISOString(),
+          pass: aprovado,
+          perf,
+          results: resultados.map((r) => ({
+            id: r.id,
+            title: r.title,
+            accuracy: Number(r.accuracy.toFixed(3)),
+            limite: r.limite,
+            passou: r.passou,
+            acertos: r.acertos,
+            total: r.total,
+            unreadAccuracy: Number(r.unreadAccuracy.toFixed(3)),
+            previewAccuracy: Number(r.previewAccuracy.toFixed(3)),
+            ms: r.ms,
+            extras: r.extras,
+            faltando: r.linhas.filter((l) => !l.ok).map((l) => l.esperado),
+            health: r.health,
+            estrategias: r.diagnostics.triedStrategies,
+            paneStrategy: r.diagnostics.paneStrategy,
+            rowStrategy: r.diagnostics.rowStrategy,
+            extraidos: r.extraidos.map((c) => ({
+              id: c.id,
+              idKind: c.idKind,
+              name: c.name,
+              preview: c.preview,
+              unread: c.unread,
+              isGroup: c.isGroup,
+              timeLabel: c.timeLabel
+            }))
+          }))
+        };
+
+        render(resultados, perf, aprovado);
+        // deixa o layout A montado para inspeção visual
+        mount(layoutA);
+        adapter.reset();
+        console.log('[harness]', aprovado ? 'APROVADO' : 'REPROVADO', window.__harnessResults);
+      }
+
+      executar();
+      window.__rerunHarness = executar;
+
+      /**
+       * AUDIT-01 #2: confiança/degradação tinham de medir o CONTEÚDO extraído.
+       * Aqui a lista é construída de forma que todas as linhas produzam o mesmo
+       * nome — o adapter tem de reportar degradado, e não "Leitura ok".
+       */
+      window.__testConfidenceReflectsQuality = () => {
+        clearNode(stage);
+        const pane = document.createElement('div');
+        pane.id = 'pane-side';
+        pane.setAttribute('style', 'height:100%;overflow-y:auto;background:#fff');
+        for (let i = 0; i < 10; i += 1) {
+          const row = document.createElement('div');
+          row.setAttribute('role', 'row');
+          row.setAttribute('data-id', `551190000${i}@c.us`);
+          row.setAttribute('style', 'height:72px;display:flex;align-items:center');
+          const nome = document.createElement('span');
+          nome.appendChild(document.createTextNode('Abrir painel lateral'));
+          const hora = document.createElement('span');
+          hora.appendChild(document.createTextNode('10:0' + i));
+          row.appendChild(nome);
+          row.appendChild(hora);
+          pane.appendChild(row);
+        }
+        stage.appendChild(pane);
+        void stage.offsetHeight;
+        adapter.reset();
+        const chats = adapter.listChats();
+        const health = adapter.health;
+        const nomes = new Set(chats.map((c) => c.name));
+        const resultado = {
+          pass: health.degraded === true && health.confidence < 45,
+          linhas: chats.length,
+          nomesDistintos: nomes.size,
+          confidence: health.confidence,
+          quality: health.quality,
+          degraded: health.degraded
+        };
+        mount(layoutA);
+        adapter.reset();
+        console.log('[harness] confiança x qualidade', resultado);
+        return resultado;
+      };
+      window.__testObserverRebind = async () => {
+        const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+        mount(layoutA);
+        adapter.reset();
+        adapter.listChats();
+        let callbacks = 0;
+        const stop = adapter.observe(() => {
+          callbacks += 1;
+        });
+        await pause(500); // descarta o callback inicial do attach
+        callbacks = 0;
+
+        const oldPane = adapter.pane;
+        mount(layoutA);
+        // Não chama listChats/probe: o observador do container (ou, na pior
+        // hipótese, o watchdog de 2 s) tem de notar sozinho que o pane saiu do
+        // DOM. A janela cobre watchdog (2000) + throttle (400) + idle (250).
+        await pause(3200);
+        callbacks = 0;
+
+        const newPane = adapter.pane;
+        newPane?.appendChild(document.createComment('observer-rebind-regression'));
+        // throttle 400 ms + requestIdleCallback com timeout de 250 ms
+        await pause(1200);
+        stop();
+        return {
+          pass: oldPane !== newPane && oldPane?.isConnected === false && callbacks > 0,
+          callbacks,
+          oldPaneDisconnected: oldPane?.isConnected === false,
+          paneChanged: oldPane !== newPane
+        };
+      };
+
+      // Modo automatizado: `?auto=1` roda tudo e despeja o resultado em
+      // #auto-results, para um navegador headless conseguir ler sem console.
+      if (new URLSearchParams(location.search).get('auto') === '1') {
+        (async () => {
+          const saida = {
+            fixtures: window.__harnessResults,
+            confiancaXqualidade: window.__testConfidenceReflectsQuality(),
+            observerRebind: await window.__testObserverRebind()
+          };
+          saida.pass = Boolean(
+            saida.fixtures.pass && saida.confiancaXqualidade.pass && saida.observerRebind.pass
+          );
+          const alvo = document.getElementById('auto-results');
+          alvo.hidden = false;
+          alvo.textContent = `AUTO_RESULTS_BEGIN${JSON.stringify(saida)}AUTO_RESULTS_END`;
+          window.__autoResults = saida;
+        })();
+      }
+    </script>
+  </body>
+</html>
