@@ -3,8 +3,8 @@
 **Última atualização:** 16 de agosto de 2026
 **Versão da extensão:** 2.x
 
-> ⚠️ **Antes de publicar:** revise este texto, substitua `SEU-EMAIL-DE-CONTATO` por um endereço
-> real e hospede o documento em uma URL pública (GitHub Pages serve). As duas lojas exigem um
+> ⚠️ **Antes de publicar:** confira os dados deste documento e hospede-o em uma URL pública
+> (GitHub Pages serve). As duas lojas exigem um
 > link acessível — não aceitam um arquivo dentro do pacote.
 
 ## Resumo
@@ -76,7 +76,7 @@ comunicado de forma destacada e dependerá do seu consentimento explícito.
 
 ## Contato
 
-Dúvidas sobre privacidade: `SEU-EMAIL-DE-CONTATO`
+Dúvidas sobre privacidade: `douglasmo16@gmail.com`
 
 ## Aviso de marcas
 
